@@ -1,0 +1,38 @@
+version: "3"
+services:
+    dhcperf:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        ports:
+            - "2112:2112"
+
+    prometheus:
+        image: prom/prometheus
+        volumes:
+            - ./prometheus.yml:/etc/prometheus/prometheus.yml
+            - prometheus_data:/prometheus
+        ports:
+            - "6789:9090"
+        depends_on:
+            - dhcperf
+
+    grafana:
+        image: grafana/grafana:latest
+        environment:
+            - GF_SECURITY_ADMIN_PASSWORD=pass
+        volumes:
+            - grafana_data:/var/lib/grafana
+        depends_on:
+            - prometheus
+        ports:
+            - "3000:3000"
+
+volumes:
+    prometheus_data: {}
+    grafana_data: {}
+
+networks:
+    default:
+        external:
+            name: ns1

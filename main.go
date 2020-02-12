@@ -55,18 +55,19 @@ func newReleaseMessage(hwaddr net.HardwareAddr, clientIP net.IP, serverIP net.IP
 	)
 }
 
-func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup) {
+
+func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup, id int) {
 	defer wg.Done()
 
 	conn, err := nclient4.NewRawUDPConn("eth0", 68) // broadcast
 	if err != nil {
-		log.Fatalf("unable to open a broadcasting socket: %w", err)
+		log.Fatalf("worker(%d): unable to open a broadcasting socket: %w",id, err)
 		return
 	}
 
 	i, err := net.InterfaceByName("eth0")
 	if err != nil {
-		log.Fatalf("unable to get interface information: %w", err)
+		log.Fatalf("worker(%d): unable to get interface information: %w", id, err)
 		return
 	}
 
@@ -75,6 +76,7 @@ func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup) {
 	for {
 		select {
 		case <-c.Done():
+			log.Printf("worker(%d): finishing\n", id)
 			return
 		default:
 			limiter.Wait(c)
@@ -89,7 +91,7 @@ func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup) {
 			// contain.
 			discover, err := dhcpv4.NewDiscovery(randMAC)
 			if err != nil {
-				err = fmt.Errorf("unable to create a discovery request: %w", err)
+				log.Fatalf("worker(%d): unable to create a discovery request: %w", id, err)
 				return
 			}
 
@@ -99,14 +101,14 @@ func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
-			log.Printf("Discover sent for MAC: %s\n", randMAC.String())
+			// log.Printf("Discover sent for MAC: %s\n", randMAC.String())
 			start := time.Now()
 			offer, err := client.SendAndRead(ctx, nclient4.DefaultServers, discover, nclient4.IsMessageType(dhcpv4.MessageTypeOffer))
 			discovers.Inc()
 		
 			// TODO: detect timeout
 			if err != nil {
-				log.Fatalf("got an error while the discovery request: %w", err)
+				log.Fatalf("worker(%d): got an error while sending the discovery request: %w", id, err)
 				return
 			}
 			offerLatency := float64(time.Since(start).Milliseconds())
@@ -116,18 +118,18 @@ func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup) {
 			// Request and Ack
 			request, err := dhcpv4.NewRequestFromOffer(offer)
 			if err != nil {
-				log.Fatalf("error while creating request: %w", err)
+				log.Fatalf("worker(%d): error while creating request: %w", id, err)
 				return
 			}
 			conversation = append(conversation, request)
 
-			log.Printf("Request for MAC: %s\n", randMAC.String())
+			// log.Printf("Request for MAC: %s\n", randMAC.String())
 			start = time.Now()
 			ack, err := client.SendAndRead(ctx, nclient4.DefaultServers, request, nclient4.IsMessageType(dhcpv4.MessageTypeAck))
 			requests.Inc()
 
 			if err != nil {
-				log.Fatalf("error while sending request: %w", err)
+				log.Fatalf("worker(%d): error while sending request: %w", id, err)
 				return
 			}
 			ackLatency := float64(time.Since(start).Milliseconds())
@@ -137,7 +139,7 @@ func worker(c context.Context, limiter *rate.Limiter, wg *sync.WaitGroup) {
 			// send release message
 			release, err := newReleaseMessage(randMAC, offer.YourIPAddr, offer.ServerIdentifier())
 			if _, err := conn.WriteTo(release.ToBytes(), nclient4.DefaultServers); err != nil {
-				log.Fatalf("error writing packet to connection: %w", err)
+				log.Fatalf("worker(%d): error writing packet to connection: %w", id, err)
 				return
 			}
 		}
@@ -175,6 +177,7 @@ func main () {
 	defer func() {
 		signal.Stop(c)
 		cancel()
+		log.Printf("Shutting down\n")
 	}()
 
 	go func() {
@@ -193,7 +196,8 @@ func main () {
 	var wg sync.WaitGroup
 	wg.Add(5)
 	for i:=0; i < 5; i++ {
-		go worker(ctx, limiter, &wg)
+		log.Printf("Starting worker %d\n", i)
+		go worker(ctx, limiter, &wg, i)
 	}
 	wg.Wait()
 }
